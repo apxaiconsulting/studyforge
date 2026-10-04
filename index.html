@@ -62,6 +62,12 @@ textarea{min-height:160px;resize:vertical}
 .tabs button{border:0;background:none;padding:7px 13px;border-radius:9px;cursor:pointer;font-weight:600;color:var(--muted);white-space:nowrap}
 .tabs button.on{background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
 .drop{display:block;border:2px dashed var(--line);border-radius:14px;padding:26px 16px;text-align:center;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
+.chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 6px 6px 10px;font-size:14px}
+.chip b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
+.chip .muted{font-size:12px;white-space:nowrap}
+.chip button{border:0;background:none;color:var(--muted);cursor:pointer;width:24px;height:24px;border-radius:6px;font-size:13px}
+.chip button:hover{background:var(--line);color:var(--ink)}
 .drop.over,.drop:hover{border-color:var(--accent);background:var(--accent-2)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
@@ -240,11 +246,11 @@ function parseJSON(t) {
 const OUTLINE_SYSTEM = `You outline study material. Respond with ONLY JSON: {"title": string (short, descriptive), "topics": [string]}.
 "topics" = the main topics of the material in reading order: between 3 and 12 (more for longer material), each 2-5 words and clearly distinct.`;
 const CARDS_SYSTEM = `You write flashcards from study material. Respond with ONLY JSON: {"flashcards":[{"front": string, "back": string, "topic": one of the given topics}]}.
-Together your cards must cover EVERY term, definition, fact, date, person, formula, process step and key idea in your assigned part, spread evenly across it — one idea per card, no duplicates. Fronts are a question or a term; backs are concise but complete answers.
-Base everything strictly on the material.`;
+Together your cards must cover EVERY term, definition, fact, date, person, formula, process step and key idea in your assigned part, spread evenly across it — one idea per card, no duplicates. Fronts are a question or a term; every back must directly and correctly answer its front — concise but complete.
+Base cards on the material. If the material is too short for this many cards, add cards on closely related, standard knowledge that deepens understanding of it — never pad with vague, trivial or repeated cards.`;
 const QUIZ_SYSTEM = `You write multiple-choice practice questions from study material. Respond with ONLY JSON: {"quiz":[{"question": string, "options": [4 strings], "answer": index 0-3, "explanation": string, "topic": one of the given topics}]}.
 Spread the questions across ALL the content in your assigned part so every important point gets tested. Mix recall, understanding and application; make distractors plausible; vary which option is correct; no duplicates.
-Base everything strictly on the material.`;
+Base questions on the material. If the material is too short for this many questions, add questions on closely related, standard knowledge — never pad with trivial or repeated questions.`;
 
 // Large amounts are split into parallel batches, each owning a contiguous share of the topics, so they stay fast and don't overlap.
 function planBatches(topics, total, perBatch) {
@@ -272,7 +278,7 @@ const COUNT_OPTS = { cards: ['auto', 25, 50, 100, 150], quiz: ['auto', 10, 25, 5
 const countPrefs = () => ({ cards: 'auto', quiz: 'auto', ...store.get('sf_counts', {}) });
 function resolveCounts(text) {
   const words = text.split(/\s+/).length, p = countPrefs(), clamp = (v, a, b) => Math.min(b, Math.max(a, Math.round(v)));
-  return { cards: p.cards === 'auto' ? clamp(words / 20, 15, 150) : +p.cards, quiz: p.quiz === 'auto' ? clamp(words / 35, 10, 100) : +p.quiz };
+  return { cards: p.cards === 'auto' ? clamp(words / 8, 15, 150) : +p.cards, quiz: p.quiz === 'auto' ? clamp(words / 14, 10, 100) : +p.quiz };
 }
 
 // Notes get their own request: bundled into the JSON call above, the model squeezed them to a short summary.
@@ -387,7 +393,10 @@ document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preven
 const stripCites = text => String(text).replace(/\s*\[cite:[^\]]*\]/g, '');
 
 // ---------- home ----------
-let draft = { text: '', busy: false, status: '', err: '' };
+let draft = { text: '', files: [], busy: false, status: '', err: '' };
+// Uploaded files are kept separately (shown as chips); pasted text stays in the text box.
+const material = () => [...draft.files.map(f => `--- ${f.name} ---\n${f.text}`), draft.text.trim()].filter(Boolean).join('\n\n');
+const wordCount = t => (t.match(/\S+/g) || []).length;
 function setStatus(t) { draft.status = t; const el = $('#status'); if (el) el.innerHTML = t ? `<span class="spin"></span> ${esc(t)}` : ''; }
 function homeView() {
   const due = sets.reduce((a, s) => a + s.flashcards.filter(isDue).length, 0);
@@ -419,13 +428,14 @@ function homeView() {
       <label class="btn sm" style="cursor:pointer">📷 Take a photo<input type="file" id="cam" accept="image/*" capture="environment" hidden></label>
       <span class="muted small" id="status">${draft.status ? `<span class="spin"></span> ${esc(draft.status)}` : ''}</span>
     </div>
-    <textarea id="src" placeholder="…or paste lecture notes, a textbook chapter, an article, a transcript. Uploaded files appear here so you can review them.">${esc(draft.text)}</textarea>
+    ${draft.files.length ? `<div class="chips">${draft.files.map((f, i) => `<span class="chip">📄 <b>${esc(f.name)}</b><span class="muted">${wordCount(f.text).toLocaleString()} words</span><button data-rm="${i}" aria-label="Remove ${esc(f.name)}">✕</button></span>`).join('')}</div>` : ''}
+    <textarea id="src" placeholder="${draft.files.length ? 'Add more notes here (optional)…' : '…or paste lecture notes, a textbook chapter, an article or a transcript here.'}">${esc(draft.text)}</textarea>
     <div class="row small" style="gap:16px;margin-top:12px">
       ${[['cards', 'Flashcards'], ['quiz', 'Quiz questions']].map(([k, l]) => `<label>${l} <select data-count="${k}">${COUNT_OPTS[k].map(v =>
         `<option value="${v}" ${String(countPrefs()[k]) === String(v) ? 'selected' : ''}>${v === 'auto' ? 'Auto — cover everything' : v}</option>`).join('')}</select></label>`).join('')}
     </div>
     <div class="row between" style="margin-top:12px">
-      <span class="muted small">${draft.text.length ? draft.text.length.toLocaleString() + ' characters' + (draft.text.length > MAX_SRC ? ' — only the first 150,000 will be used' : '') : ''}</span>
+      <span class="muted small" id="wc">${matInfo()}</span>
       <button class="btn primary" id="gen" ${draft.busy || draft.status ? 'disabled' : ''}>${draft.busy ? `<span class="spin" style="border-top-color:#fff"></span>&nbsp; ${esc(draft.busy)}` : '✦ Generate study set'}</button>
     </div>
     ${draft.err ? `<div class="err">${esc(draft.err)}</div>` : ''}
@@ -441,9 +451,14 @@ function homeView() {
     </div>`; }).join('')}</div>`
     : `<p class="muted">No study sets yet. Generate your first one above.</p>`}`;
 }
+function matInfo() {
+  const m = material();
+  return m ? wordCount(m).toLocaleString() + ' words' + (m.length > MAX_SRC ? ' — only the first 150,000 characters will be used' : '') : '';
+}
 function bindHome() {
   document.querySelectorAll('[data-open]').forEach(c => c.onclick = () => go('set', { id: c.dataset.open, tab: 'notes' }));
-  const src = $('#src'); src.oninput = () => draft.text = src.value;
+  const src = $('#src'); src.oninput = () => { draft.text = src.value; $('#wc').textContent = matInfo(); };
+  document.querySelectorAll('[data-rm]').forEach(b => b.onclick = e => { e.preventDefault(); draft.files.splice(+b.dataset.rm, 1); render(); });
   const take = async files => {
     if (!files?.length || draft.status) return;
     draft.err = ''; draft.status = 'Reading files…'; render();
@@ -451,7 +466,7 @@ function bindHome() {
       try {
         const t = (await readFile(f)).trim();
         if (!t) throw new Error('no text found');
-        draft.text = (draft.text.trim() ? draft.text.trim() + '\n\n' : '') + `--- ${f.name} ---\n` + t;
+        draft.files.push({ name: f.name, text: t });
       } catch (e) { draft.err += `Could not read ${f.name}: ${e.message}. `; }
     }
     draft.status = ''; render();
@@ -466,7 +481,7 @@ function bindHome() {
   document.querySelectorAll('[data-count]').forEach(sel => sel.onchange = () => store.set('sf_counts', { ...countPrefs(), [sel.dataset.count]: sel.value }));
 }
 async function generate() {
-  const text = draft.text.trim().slice(0, MAX_SRC);
+  const text = material().slice(0, MAX_SRC);
   if (text.length < 80) { draft.err = 'Add a bit more material (at least a paragraph).'; return render(); }
   const n = resolveCounts(text);
   draft.busy = `Writing notes, ${n.cards} flashcards and ${n.quiz} questions…`; draft.err = ''; render();
@@ -491,7 +506,7 @@ async function generate() {
     if (!s.flashcards.length && !s.quiz.length) throw new Error('The AI response was incomplete — please try again.');
     sets.unshift(s);
     if (!store.set('sf_sets', sets)) { sets.shift(); throw new Error('Your browser storage is full — delete an old study set, then try again.'); }
-    draft = { text: '', busy: false, status: '', err: '' };
+    draft = { text: '', files: [], busy: false, status: '', err: '' };
     go('set', { id: s.id, tab: 'notes' });
   } catch (e) { draft.busy = false; draft.err = e.message; render(); }
 }
