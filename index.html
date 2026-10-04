@@ -488,7 +488,12 @@ function setView() {
 function delSet() { if (!confirm('Delete this study set?')) return; sets = sets.filter(s => s.id !== view.id); saveSets(); go('home'); }
 function mountSetTab() { ({ notes: notesTab, cards: cardsTab, quiz: quizTab, exam: examTab, tutor: tutorTab, source: sourceTab })[view.tab](cur(), $('#pane')); }
 
-const makeNotes = text => ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nWrite the complete, long, detailed study notes.` }], NOTES_SYSTEM, 16000);
+async function makeNotes(text) {
+  const notes = await ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nWrite the complete, long, detailed study notes.` }], NOTES_SYSTEM, 40000);
+  // The model sometimes puts the review before Key terms; always move it to the very end.
+  const m = notes.match(/^## +Comprehensive review\b[\s\S]*?(?=^## |(?![\s\S]))/im);
+  return m ? notes.replace(m[0], '').trimEnd() + '\n\n' + m[0].trim() + '\n' : notes;
+}
 const notesBusy = new Set(); // set ids with notes being (re)generated
 function notesTab(s, el) {
   if (notesBusy.has(s.id)) { el.innerHTML = '<div class="card center"><span class="spin" style="width:30px;height:30px"></span><h2 style="margin-top:14px">Writing detailed notes…</h2><p class="muted">This can take up to a minute for long material.</p></div>'; return; }
