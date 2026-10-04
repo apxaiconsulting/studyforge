@@ -4,6 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>StudyForge</title>
+<meta name="description" content="Turn your notes into study notes, smart flashcards, mock exams and an AI tutor.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="StudyForge">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1926" media="(prefers-color-scheme: dark)">
 <script>try { const t = localStorage.getItem('sf_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
@@ -26,7 +37,7 @@ input,textarea,.notes,.source,.msg{-webkit-user-select:text;user-select:text;-we
 input[type=text],input[type=password],textarea,select{font-size:16px}
 header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
 .logo{font-weight:800;font-size:19px;letter-spacing:-.02em;cursor:pointer;display:flex;align-items:center;gap:8px}
-.logo span{background:var(--accent);color:#fff;border-radius:8px;width:28px;height:28px;display:grid;place-items:center;font-size:16px}
+.logo img{width:30px;height:30px;border-radius:8px;display:block}
 header .sp{flex:1}
 main{max-width:940px;margin:0 auto;padding:24px 16px 80px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
@@ -107,7 +118,7 @@ label.chk{display:inline-flex;gap:6px;align-items:center;margin-right:14px;curso
 </head>
 <body>
 <header>
-  <div class="logo" onclick="go('home')"><span>✦</span>StudyForge</div>
+  <div class="logo" onclick="go('home')"><img src="icon.svg" alt="">StudyForge</div>
   <div class="sp"></div>
   <button class="btn sm" id="theme" onclick="cycleTheme()" aria-label="Change theme"></button>
 </header>
