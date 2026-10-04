@@ -254,17 +254,21 @@ const NOTES_SYSTEM = `You are an expert tutor writing comprehensive, exam-ready 
 
 Be thorough — these notes should let a student learn the topic without rereading the source:
 - Cover EVERY concept, term, process, date, formula, person, example and argument in the material. Never skip or merge distinct points.
-- Explain each idea clearly in your own words, then add the context, cause/effect, significance or "why it matters" that the material supports. Short material should be expanded with explanation, not just restated.
-- Organise logically: "# <title>", a short "## Overview", then one "##" section per major topic, with "###" subsections. Follow the material's order unless another order is clearly easier to learn.
+- Explain each idea in depth in your own words, then expand it with accurate background knowledge: context, causes and effects, how it works step by step, significance or "why it matters", connections to other ideas, and examples. Short material must be expanded substantially — teach the topic, don't just restate the source.
+- Organise logically: "# <title>", an "## Overview" (a full paragraph), then one "##" section per major topic, each with several "###" subsections and multiple paragraphs. Follow the material's order unless another order is clearly easier to learn.
 - Use bullet points and short paragraphs; **bold** every key term the first time it appears, followed by its definition.
 - Use tables for comparisons, classifications, timelines or step-by-step processes; numbered lists for sequences.
 - Add worked examples or real-world examples where they help (from the material, or clearly simple illustrations of it).
 - Include, where useful: "> 💡 **Tip:**" memory aids or mnemonics, and "> ⚠️ **Common mistake:**" callouts for easily confused ideas.
-- Write formulas and equations in LaTeX: $...$ inline, $$...$$ on their own line (e.g. $$6CO_2 + 6H_2O \\rightarrow C_6H_{12}O_6 + 6O_2$$). Use LaTeX only for real formulas — write words and abbreviations like ATP or DNA as plain text.
+- Write formulas and equations in LaTeX: $...$ inline, $$...$$ on their own line (e.g. $$6CO_2 + 6H_2O \\rightarrow C_6H_{12}O_6 + 6O_2$$). Use LaTeX only for real formulas — write words, abbreviations (ATP, DNA), units (kg, m/s², N) and plain numbers as normal text; inside formulas wrap units in \\text{}, e.g. $F = 8\\,\\text{N}$.
 - Only add a mnemonic if it is genuinely memorable — skip weak ones.
-- Finish with "## Key terms" (a two-column table: Term | Meaning) and "## Key takeaways" (5-10 bullets).
-Length: scale with the material — never shorter than about 600 words, and for long material aim for roughly 1,500-4,000 words. Prefer completeness over brevity.
-Stay faithful to the material; if you add general background, keep it brief and accurate.`;
+- After the topic sections, add "## Key terms" (a two-column table: Term | Meaning) and "## Key takeaways" (5-10 bullets).
+- End with "## Comprehensive review": a detailed summary of the ENTIRE material that a student could reread the night before an exam instead of the full notes.
+  - One "###" per major topic, in order. Under each, a substantial paragraph (or a paragraph plus tight bullets) recapping every key fact, definition, formula, date, cause/effect and example from that topic — condensed, but nothing important left out.
+  - Then "### The big picture": a paragraph explaining how the topics connect and why the subject matters.
+  - Make it roughly a third as long as the notes above it, and never under 500 words.
+LENGTH IS IMPORTANT. The notes (not counting the comprehensive review) must be long and detailed: at least 1,500 words even for a single short paragraph of source material, 2,500-4,000 words for a page or two, and 4,000-7,000 words for a full chapter or lecture. Never cut a section short to save space; when in doubt, explain more.
+Everything must be accurate and consistent with the material; background you add should be standard, well-established knowledge for the subject.`;
 
 const TRANSCRIBE_SYSTEM = `You transcribe study material from images (photos of notes, handwriting, whiteboards, textbook or slide pages, scanned documents). Output the full text faithfully in reading order as plain markdown. Preserve headings, lists, equations (as plain text) and tables. Briefly describe any diagram in [Diagram: ...]. Mark unreadable words as [illegible]. Output only the transcription.`;
 
@@ -484,7 +488,7 @@ function setView() {
 function delSet() { if (!confirm('Delete this study set?')) return; sets = sets.filter(s => s.id !== view.id); saveSets(); go('home'); }
 function mountSetTab() { ({ notes: notesTab, cards: cardsTab, quiz: quizTab, exam: examTab, tutor: tutorTab, source: sourceTab })[view.tab](cur(), $('#pane')); }
 
-const makeNotes = text => ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nWrite the complete study notes.` }], NOTES_SYSTEM, 16000);
+const makeNotes = text => ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nWrite the complete, long, detailed study notes.` }], NOTES_SYSTEM, 16000);
 const notesBusy = new Set(); // set ids with notes being (re)generated
 function notesTab(s, el) {
   if (notesBusy.has(s.id)) { el.innerHTML = '<div class="card center"><span class="spin" style="width:30px;height:30px"></span><h2 style="margin-top:14px">Writing detailed notes…</h2><p class="muted">This can take up to a minute for long material.</p></div>'; return; }
