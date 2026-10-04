@@ -34,7 +34,7 @@ button,input,textarea,select{font:inherit;color:inherit}
 html{touch-action:manipulation;-webkit-text-size-adjust:100%}
 body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
 /* Study content stays selectable so students can copy it */
-input,textarea,.notes,.source,.msg{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+input,textarea,.notes,.msg{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
 /* iOS zooms into any field with text under 16px — keep fields at 16px so focusing never zooms */
 input[type=text],input[type=password],textarea,select{font-size:16px}
 header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
@@ -102,15 +102,11 @@ textarea{min-height:160px;resize:vertical}
 .opt.sel{border-color:var(--accent);background:var(--accent-2)}
 .opt.right{border-color:var(--good);background:color-mix(in srgb,var(--good) 12%,var(--card))}
 .opt.wrong{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,var(--card))}
-.cite{border:1px solid var(--line);background:var(--card);color:var(--accent);border-radius:99px;padding:1px 8px;font-size:12px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap}
-.cite:hover{border-color:var(--accent)}
 .chat{display:flex;flex-direction:column;gap:10px;height:52vh;overflow-y:auto;padding:4px}
 .msg{max-width:85%;padding:10px 14px;border-radius:14px}
 .msg.user{align-self:flex-end;background:var(--accent);color:#fff}
 .msg.ai{align-self:flex-start;background:var(--bg);border:1px solid var(--line)}
 .msg.ai p:first-child{margin-top:0}.msg.ai p:last-child{margin-bottom:0}
-.source{white-space:pre-wrap;font-size:14.5px;line-height:1.7}
-.source mark{background:color-mix(in srgb,var(--warn) 35%,transparent);color:inherit;border-radius:4px;padding:1px 0;box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 35%,transparent)}
 .examq{border-top:1px solid var(--line);padding:18px 0}
 .examq:first-child{border-top:0;padding-top:0}
 .sticky{position:sticky;top:62px;z-index:4;margin-bottom:14px}
@@ -240,14 +236,44 @@ function parseJSON(t) {
   try { return JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1)); }
   catch { throw new Error('The AI’s answer came back incomplete — please try again (very long material can cause this).'); }
 }
-const QUOTE_RULE = `"quote" must be an exact, verbatim excerpt (5-25 words) copied character-for-character from the material that supports the item.`;
 
-const GEN_SYSTEM = `You are an expert tutor who turns study material into learning resources. Respond with ONLY a JSON object, no prose, matching:
-{"title": string (short, descriptive),
- "topics": [3-8 short topic names covering the material],
- "flashcards": [{"front": string, "back": string, "topic": one of topics, "quote": string}] (15-25 cards covering terms, concepts, facts),
- "quiz": [{"question": string, "options": [4 strings], "answer": index 0-3, "explanation": string, "topic": one of topics, "quote": string}] (10-15 questions, mixed difficulty, plausible distractors)}
-${QUOTE_RULE} Base everything strictly on the provided material.`;
+const OUTLINE_SYSTEM = `You outline study material. Respond with ONLY JSON: {"title": string (short, descriptive), "topics": [string]}.
+"topics" = the main topics of the material in reading order: between 3 and 12 (more for longer material), each 2-5 words and clearly distinct.`;
+const CARDS_SYSTEM = `You write flashcards from study material. Respond with ONLY JSON: {"flashcards":[{"front": string, "back": string, "topic": one of the given topics}]}.
+Together your cards must cover EVERY term, definition, fact, date, person, formula, process step and key idea in your assigned part, spread evenly across it — one idea per card, no duplicates. Fronts are a question or a term; backs are concise but complete answers.
+Base everything strictly on the material.`;
+const QUIZ_SYSTEM = `You write multiple-choice practice questions from study material. Respond with ONLY JSON: {"quiz":[{"question": string, "options": [4 strings], "answer": index 0-3, "explanation": string, "topic": one of the given topics}]}.
+Spread the questions across ALL the content in your assigned part so every important point gets tested. Mix recall, understanding and application; make distractors plausible; vary which option is correct; no duplicates.
+Base everything strictly on the material.`;
+
+// Large amounts are split into parallel batches, each owning a contiguous share of the topics, so they stay fast and don't overlap.
+function planBatches(topics, total, perBatch) {
+  const n = Math.max(1, Math.ceil(total / perBatch));
+  const parts = topics.length >= 2 ? Math.min(n, topics.length) : n, counts = [];
+  for (let i = 0; i < parts; i++) counts.push(Math.floor(total / parts) + (i < total % parts ? 1 : 0));
+  if (topics.length < 2) return counts.map((count, i) => ({ count, focus: parts > 1 ? `Cover part ${i + 1} of ${parts} of the material (split it into ${parts} equal parts in reading order) — other parts are handled separately.` : 'Cover the whole material.' }));
+  return counts.map((count, i) => {
+    const group = topics.slice(Math.floor(i * topics.length / parts), Math.floor((i + 1) * topics.length / parts));
+    return { count, focus: parts > 1 ? `Cover ONLY these topics — the others are handled separately: ${JSON.stringify(group)}.` : 'Cover all the topics.' };
+  });
+}
+async function runBatches({ system, key, text, topics, total, perBatch, tokensPerItem, extra = '' }) {
+  const results = await Promise.allSettled(planBatches(topics, total, perBatch).map(b =>
+    ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nTopics: ${JSON.stringify(topics)}\n${b.focus}\nWrite exactly ${b.count} items.${extra}` }],
+      system, Math.min(30000, 2000 + b.count * tokensPerItem)).then(t => parseJSON(t)[key] || [])));
+  const ok = results.filter(r => r.status === 'fulfilled');
+  if (!ok.length) throw results[0].reason;
+  return ok.flatMap(r => r.value);
+}
+const dedupe = (arr, key) => { const seen = new Set(); return arr.filter(x => { const k = norm(key(x)); return k && !seen.has(k) && seen.add(k); }); };
+
+// How many cards/questions to make: "auto" scales with the material so everything is covered.
+const COUNT_OPTS = { cards: ['auto', 25, 50, 100, 150], quiz: ['auto', 10, 25, 50, 100] };
+const countPrefs = () => ({ cards: 'auto', quiz: 'auto', ...store.get('sf_counts', {}) });
+function resolveCounts(text) {
+  const words = text.split(/\s+/).length, p = countPrefs(), clamp = (v, a, b) => Math.min(b, Math.max(a, Math.round(v)));
+  return { cards: p.cards === 'auto' ? clamp(words / 20, 15, 150) : +p.cards, quiz: p.quiz === 'auto' ? clamp(words / 35, 10, 100) : +p.quiz };
+}
 
 // Notes get their own request: bundled into the JSON call above, the model squeezed them to a short summary.
 const NOTES_SYSTEM = `You are an expert tutor writing comprehensive, exam-ready study notes from a student's material. Output ONLY the notes in Markdown (no preamble, no closing remarks).
@@ -357,14 +383,8 @@ function render() {
 document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 // Dropping a file anywhere outside the drop zone would make the browser open it and leave the app.
 ['dragover', 'drop'].forEach(t => window.addEventListener(t, e => { if (!e.target.closest?.('#drop')) e.preventDefault(); }));
-// Citation chips: capture phase so they work inside flip cards
-document.addEventListener('click', e => {
-  const b = e.target.closest('.cite'); if (!b) return;
-  e.stopPropagation(); e.preventDefault();
-  go('set', { id: b.dataset.s || view.id, tab: 'source', quote: b.dataset.q });
-}, true);
-const cite = (q, sid) => q ? `<button class="cite" data-s="${esc(sid)}" data-q="${esc(q)}">📍 Source</button>` : '';
-const withCites = (text, sid) => md(String(text).replace(/\[cite:\s*"?([^\]]+?)"?\s*\]/g, (_, q) => ' ' + cite(q.trim(), sid)));
+// Older tutor replies contain [cite: …] markers from when sources were shown; hide them.
+const stripCites = text => String(text).replace(/\s*\[cite:[^\]]*\]/g, '');
 
 // ---------- home ----------
 let draft = { text: '', busy: false, status: '', err: '' };
@@ -400,9 +420,13 @@ function homeView() {
       <span class="muted small" id="status">${draft.status ? `<span class="spin"></span> ${esc(draft.status)}` : ''}</span>
     </div>
     <textarea id="src" placeholder="…or paste lecture notes, a textbook chapter, an article, a transcript. Uploaded files appear here so you can review them.">${esc(draft.text)}</textarea>
+    <div class="row small" style="gap:16px;margin-top:12px">
+      ${[['cards', 'Flashcards'], ['quiz', 'Quiz questions']].map(([k, l]) => `<label>${l} <select data-count="${k}">${COUNT_OPTS[k].map(v =>
+        `<option value="${v}" ${String(countPrefs()[k]) === String(v) ? 'selected' : ''}>${v === 'auto' ? 'Auto — cover everything' : v}</option>`).join('')}</select></label>`).join('')}
+    </div>
     <div class="row between" style="margin-top:12px">
       <span class="muted small">${draft.text.length ? draft.text.length.toLocaleString() + ' characters' + (draft.text.length > MAX_SRC ? ' — only the first 150,000 will be used' : '') : ''}</span>
-      <button class="btn primary" id="gen" ${draft.busy || draft.status ? 'disabled' : ''}>${draft.busy ? '<span class="spin" style="border-top-color:#fff"></span>&nbsp; Generating study set…' : '✦ Generate study set'}</button>
+      <button class="btn primary" id="gen" ${draft.busy || draft.status ? 'disabled' : ''}>${draft.busy ? `<span class="spin" style="border-top-color:#fff"></span>&nbsp; ${esc(draft.busy)}` : '✦ Generate study set'}</button>
     </div>
     ${draft.err ? `<div class="err">${esc(draft.err)}</div>` : ''}
   </div>
@@ -439,27 +463,31 @@ function bindHome() {
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); take([...e.dataTransfer.files]); };
   $('#gen').onclick = generate;
+  document.querySelectorAll('[data-count]').forEach(sel => sel.onchange = () => store.set('sf_counts', { ...countPrefs(), [sel.dataset.count]: sel.value }));
 }
 async function generate() {
   const text = draft.text.trim().slice(0, MAX_SRC);
   if (text.length < 80) { draft.err = 'Add a bit more material (at least a paragraph).'; return render(); }
-  draft.busy = true; draft.err = ''; render();
+  const n = resolveCounts(text);
+  draft.busy = `Writing notes, ${n.cards} flashcards and ${n.quiz} questions…`; draft.err = ''; render();
   try {
-    // Cards/quiz and the detailed notes are generated in parallel; if only the notes fail, the set is still saved
-    // and the Notes tab offers to generate them again.
-    const [cardsRes, notesRes] = await Promise.allSettled([
-      ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nCreate the study set JSON.` }], GEN_SYSTEM, 16000),
-      makeNotes(text)
+    // Notes start right away; the outline (title + topics) comes first so card and quiz batches can split the topics.
+    // If only the notes or the quiz fail, the set is still saved.
+    const notesP = makeNotes(text).then(v => ({ v }), e => ({ e }));
+    const outline = parseJSON(await ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nOutline it.` }], OUTLINE_SYSTEM, 2000));
+    const topics = (outline.topics || []).filter(t => typeof t === 'string' && t.trim());
+    const [cardsRes, quizRes] = await Promise.allSettled([
+      runBatches({ system: CARDS_SYSTEM, key: 'flashcards', text, topics, total: n.cards, perBatch: 50, tokensPerItem: 160 }),
+      runBatches({ system: QUIZ_SYSTEM, key: 'quiz', text, topics, total: n.quiz, perBatch: 30, tokensPerItem: 320 })
     ]);
-    if (cardsRes.status === 'rejected') throw cardsRes.reason;
-    const out = parseJSON(cardsRes.value);
-    const topics = out.topics || [];
-    const s = { id: Date.now().toString(36), created: Date.now(), source: text, title: out.title || 'Untitled', topics,
-      summary: notesRes.status === 'fulfilled' ? notesRes.value : '',
-      flashcards: (out.flashcards || []).filter(c => c.front && c.back).map(c => ({ ...c, topic: fixTopic(c.topic, topics) })),
-      quiz: (out.quiz || []).map(q => ({ ...q, answer: +q.answer, topic: fixTopic(q.topic, topics) })).filter(q => q.question && q.options?.length === 4 && q.answer >= 0 && q.answer < 4),
+    if (cardsRes.status === 'rejected' && quizRes.status === 'rejected') throw cardsRes.reason;
+    const notes = await notesP;
+    const s = { id: Date.now().toString(36), created: Date.now(), source: text, title: outline.title || 'Untitled', topics,
+      summary: notes.v || '',
+      flashcards: dedupe((cardsRes.value || []).filter(c => c.front && c.back), c => c.front).map(c => ({ ...c, topic: fixTopic(c.topic, topics) })),
+      quiz: dedupe((quizRes.value || []).map(q => ({ ...q, answer: +q.answer, topic: fixTopic(q.topic, topics) })).filter(q => q.question && q.options?.length === 4 && q.answer >= 0 && q.answer < 4), q => q.question),
       chat: [], exams: [], best: null };
-    if (notesRes.status === 'rejected') s.notesErr = 'Notes didn’t finish: ' + notesRes.reason.message;
+    if (notes.e) s.notesErr = 'Notes didn’t finish: ' + notes.e.message;
     if (!s.flashcards.length && !s.quiz.length) throw new Error('The AI response was incomplete — please try again.');
     sets.unshift(s);
     if (!store.set('sf_sets', sets)) { sets.shift(); throw new Error('Your browser storage is full — delete an old study set, then try again.'); }
@@ -470,7 +498,7 @@ async function generate() {
 
 // ---------- set view ----------
 const cur = () => sets.find(s => s.id === view.id);
-const TABS = [['notes', '📝 Notes'], ['cards', '🗂 Flashcards'], ['quiz', '✅ Quiz'], ['exam', '🎓 Exam'], ['tutor', '💬 Tutor'], ['source', '📄 Source']];
+const TABS = [['notes', '📝 Notes'], ['cards', '🗂 Flashcards'], ['quiz', '✅ Quiz'], ['exam', '🎓 Exam'], ['tutor', '💬 Tutor']];
 function setView() {
   const s = cur(), r = readiness(s);
   return `
@@ -486,7 +514,7 @@ function setView() {
   <div id="pane"></div>`;
 }
 function delSet() { if (!confirm('Delete this study set?')) return; sets = sets.filter(s => s.id !== view.id); saveSets(); go('home'); }
-function mountSetTab() { ({ notes: notesTab, cards: cardsTab, quiz: quizTab, exam: examTab, tutor: tutorTab, source: sourceTab })[view.tab](cur(), $('#pane')); }
+function mountSetTab() { ({ notes: notesTab, cards: cardsTab, quiz: quizTab, exam: examTab, tutor: tutorTab })[view.tab](cur(), $('#pane')); }
 
 async function makeNotes(text) {
   const notes = await ai([{ role: 'user', content: `<material>\n${text}\n</material>\n\nWrite the complete, long, detailed study notes.` }], NOTES_SYSTEM, 40000);
@@ -532,7 +560,7 @@ function cardsTab(s, el) {
   ${topics.length ? `<div class="card" style="margin-bottom:14px"><h2>Mastery by topic</h2>
     ${topics.map(t => { const tm = mastery(c.filter(x => x.topic === t)); return `<div class="topic"><span>${esc(t)}</span><div class="bar"><i style="width:${tm}%;background:${tm >= 70 ? 'var(--good)' : tm >= 35 ? 'var(--accent)' : 'var(--warn)'}"></i></div><span class="muted">${tm}%</span></div>`; }).join('')}</div>` : ''}
   <div class="card"><h2>All cards</h2>
-    ${c.map(x => `<div class="examq"><div class="row between"><b>${esc(x.front)}</b><span class="row" style="gap:6px">${x.topic ? `<span class="pill">${esc(x.topic)}</span>` : ''}${cite(x.quote, s.id)}</span></div>
+    ${c.map(x => `<div class="examq"><div class="row between"><b>${esc(x.front)}</b><span class="row" style="gap:6px">${x.topic ? `<span class="pill">${esc(x.topic)}</span>` : ''}</span></div>
       <div class="muted">${esc(x.back)}</div></div>`).join('')}</div>`;
   $('#study').onclick = () => startReview([s], { title: s.title, back: { name: 'set', id: s.id, tab: 'cards' } });
   $('#cram').onclick = () => startReview([s], { title: s.title + ' — cram', cram: true, back: { name: 'set', id: s.id, tab: 'cards' } });
@@ -568,7 +596,7 @@ function reviewView(app) {
     <div class="bar" style="margin-top:12px"><i style="width:${rv.pos / rv.items.length * 100}%"></i></div>
     <div class="flash ${rv.flip ? 'flip' : ''}" id="card"><div class="in">
       <div class="face"><span class="tag">${esc(c.topic || 'TERM').toUpperCase()}</span><div>${esc(c.front)}</div></div>
-      <div class="face back"><span class="tag">ANSWER</span><div>${esc(c.back)}</div>${cite(c.quote, s.id)}</div></div></div>
+      <div class="face back"><span class="tag">ANSWER</span><div>${esc(c.back)}</div></div></div></div>
     <div id="actions"></div>
     <p class="muted small" style="text-align:center">Space to flip · ${rv.cram ? '1 missed · 2 got it' : '1 Again · 2 Hard · 3 Good · 4 Easy'}</p>`;
   const actions = () => {
@@ -621,7 +649,7 @@ function quizTab(s, el) {
       <div class="card"><h2 style="font-size:17px">${esc(q.question)}</h2>
         ${q.options.map((o, i) => `<button class="opt ${done ? (i === q.answer ? 'right' : i === qz.picked ? 'wrong' : '') : ''}" data-i="${i}" ${done ? 'disabled' : ''}>
           <b>${'ABCD'[i]}.</b> ${esc(o)}</button>`).join('')}
-        ${done ? `<div class="fb"><b>${qz.picked === q.answer ? '✓ Correct' : '✗ Not quite'}</b> — ${esc(q.explanation)} ${cite(q.quote, s.id)}</div>
+        ${done ? `<div class="fb"><b>${qz.picked === q.answer ? '✓ Correct' : '✗ Not quite'}</b> — ${esc(q.explanation)}</div>
           <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn primary" id="next">${qz.i + 1 < s.quiz.length ? 'Next →' : 'See results'}</button></div>` : ''}
       </div>`;
     el.querySelectorAll('.opt').forEach(b => b.onclick = () => { qz.picked = +b.dataset.i; if (qz.picked === q.answer) qz.score++; draw(); });
@@ -639,9 +667,8 @@ const EXAM_SYSTEM = `You write rigorous mock exams from study material. Respond 
   "answer": number 0-3 (mcq) | true/false (tf) | string: the exact missing word/phrase (fill) | string: a complete model answer (short),
   "rubric": string (short only: the key points needed for full credit),
   "points": number (mcq/tf/fill: 1, short: 3-5),
-  "topic": one of the given topics,
-  "quote": string}]}
-${QUOTE_RULE} Test understanding and application, not just recall. Mix difficulties. Order questions by type: mcq, tf, fill, short.`;
+  "topic": one of the given topics}]}
+Test understanding and application, not just recall. Mix difficulties and spread questions across all the content in your assigned part; no duplicates.`;
 const GRADE_SYSTEM = `You are a fair, rigorous examiner. Grade each student answer against the model answer and rubric. Award partial credit where deserved (any number from 0 to the max points, halves allowed). For fill-in-the-blank, accept synonyms and minor spelling errors. Respond with ONLY JSON:
 {"grades":[{"id": number, "earned": number, "feedback": string (1-2 specific sentences: what was right, what was missing)}],
  "advice": string (3-4 sentences of personalised study advice based on this student's mistakes)}`;
@@ -666,14 +693,14 @@ function examTab(s, el) {
     $('#discard').onclick = () => { ex = null; examTab(s, el); };
     return;
   }
-  if (!ex || ex.sid !== s.id) ex ={ sid: s.id, phase: 'setup', n: 15, mins: 20, types: { mcq: true, tf: true, fill: true, short: true } };
+  if (!ex || ex.sid !== s.id) ex = { sid: s.id, phase: 'setup', n: 25, mins: 30, types: { mcq: true, tf: true, fill: true, short: true } };
   if (ex.phase === 'setup') {
     el.innerHTML = `<div class="card" style="margin-bottom:14px">
       <h2>Mock exam</h2>
       <p class="muted" style="margin-top:-6px">A fresh, timed exam with mixed question types. Written answers are graded by AI against a rubric, with partial credit and feedback.</p>
       <div class="row" style="gap:18px;margin:14px 0">
-        <label>Questions <select id="n">${[10, 15, 25].map(v => `<option ${v === ex.n ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-        <label>Time limit <select id="mins">${[0, 10, 20, 30, 45, 60].map(v => `<option value="${v}" ${v === ex.mins ? 'selected' : ''}>${v ? v + ' min' : 'Untimed'}</option>`).join('')}</select></label>
+        <label>Questions <select id="n">${[10, 25, 50, 75, 100].map(v => `<option ${v === ex.n ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>Time limit <select id="mins">${[0, 15, 30, 45, 60, 90, 120, 180].map(v => `<option value="${v}" ${v === ex.mins ? 'selected' : ''}>${v ? (v >= 90 ? v / 60 + ' hours' : v + ' min') : 'Untimed'}</option>`).join('')}</select></label>
       </div>
       <div style="margin-bottom:16px">${[['mcq', 'Multiple choice'], ['tf', 'True / false'], ['fill', 'Fill in the blank'], ['short', 'Short answer']].map(([k, l]) =>
         `<label class="chk"><input type="checkbox" data-t="${k}" ${ex.types[k] ? 'checked' : ''}> ${l}</label>`).join('')}</div>
@@ -689,7 +716,7 @@ function examTab(s, el) {
     return;
   }
   if (ex.phase === 'generating' || ex.phase === 'grading') {
-    el.innerHTML = `<div class="card center"><span class="spin" style="width:30px;height:30px"></span><h2 style="margin-top:14px">${ex.phase === 'generating' ? 'Writing your exam…' : 'Grading your answers…'}</h2><p class="muted">${ex.phase === 'generating' ? 'Creating fresh questions from your material.' : 'Checking written answers against the rubric.'}</p></div>`;
+    el.innerHTML = `<div class="card center"><span class="spin" style="width:30px;height:30px"></span><h2 style="margin-top:14px">${ex.phase === 'generating' ? 'Writing your exam…' : 'Grading your answers…'}</h2><p class="muted">${ex.phase === 'generating' ? `Creating ${ex.n} fresh questions from your material${ex.n > 25 ? ' — big exams take up to a minute' : ''}.` : 'Checking written answers against the rubric.'}</p></div>`;
     return;
   }
   if (ex.phase === 'taking') {
@@ -736,7 +763,7 @@ function examTab(s, el) {
       <div style="font-weight:600;margin:4px 0">${esc(q.question)}</div>
       <div class="small"><span class="muted">Your answer:</span> ${esc(ansText(q, ex.answers[i]))}</div>
       ${full && q.type !== 'short' ? '' : `<div class="small"><span class="muted">${q.type === 'short' ? 'Model answer' : 'Correct answer'}:</span> ${esc(keyText(q))}</div>`}
-      ${g.feedback || q.quote ? `<div class="fb">${esc(g.feedback || '')} ${cite(q.quote, s.id)}</div>` : ''}
+      ${g.feedback ? `<div class="fb">${esc(g.feedback)}</div>` : ''}
     </div>`; }).join('')}</div>`;
   $('#again').onclick = () => { ex = { ...ex, phase: 'setup', result: null, err: '' }; examTab(s, el); };
   if (drillable) $('#drill').onclick = () => startReview([s], { title: 'Weak topics', cram: true, topics: weak, back: { name: 'set', id: s.id, tab: 'exam' } });
@@ -746,8 +773,10 @@ async function makeExam(s) {
   if (!types.length) { ex.err = 'Pick at least one question type.'; return render(); }
   ex.phase = 'generating'; ex.err = ''; render();
   try {
-    const out = parseJSON(await ai([{ role: 'user', content: `<material>\n${s.source}\n</material>\n\nTopics: ${JSON.stringify(s.topics || [])}\nWrite ${ex.n} questions using only these types: ${types.join(', ')}.\nAvoid repeating these existing practice questions: ${JSON.stringify(s.quiz.map(q => q.question))}` }], EXAM_SYSTEM, 12000));
-    const qs = (out.questions || []).map(q => ({ ...q, topic: fixTopic(q.topic, s.topics || []), points: Math.max(1, +q.points || 1), answer: q.type === 'tf' ? q.answer === true || q.answer === 'true' : q.type === 'mcq' ? +q.answer : q.answer }))
+    const raw = await runBatches({ system: EXAM_SYSTEM, key: 'questions', text: s.source, topics: s.topics || [], total: ex.n, perBatch: 25, tokensPerItem: 380,
+      extra: `\nUse only these question types, mixed: ${types.join(', ')}.\nDon't repeat these practice-quiz questions: ${JSON.stringify(s.quiz.map(q => q.question).slice(0, 150))}` });
+    const order = { mcq: 0, tf: 1, fill: 2, short: 3 };
+    const qs = dedupe(raw, q => q.question).sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9)).map(q => ({ ...q, topic: fixTopic(q.topic, s.topics || []), points: Math.max(1, +q.points || 1), answer: q.type === 'tf' ? q.answer === true || q.answer === 'true' : q.type === 'mcq' ? +q.answer : q.answer }))
       .filter(q => types.includes(q.type) && q.question && (q.type !== 'mcq' || (q.options?.length === 4 && q.answer >= 0 && q.answer < 4)));
     if (!qs.length) throw new Error('The exam came back empty — try again.');
     Object.assign(ex, { qs, answers: qs.map(() => null), phase: 'taking', startAt: Date.now(), endAt: ex.mins ? Date.now() + ex.mins * 60e3 : null });
@@ -769,7 +798,7 @@ async function submitExam(timedOut = false) {
   const toGrade = ex.qs.map((q, i) => items[i] ? null : { id: i, type: q.type, question: q.question, max_points: q.points, model_answer: q.answer, rubric: q.rubric || '', student_answer: ex.answers[i] }).filter(Boolean);
   const mistakes = ex.qs.map((q, i) => items[i] && items[i].earned < q.points ? { question: q.question, topic: q.topic, student: ansText(q, ex.answers[i]), correct: keyText(q) } : null).filter(Boolean);
   if (toGrade.length || mistakes.length) try {
-    const out = parseJSON(await ai([{ role: 'user', content: `Answers to grade:\n${JSON.stringify(toGrade)}\n\nOther questions the student got wrong (already graded, use for advice):\n${JSON.stringify(mistakes)}` }], GRADE_SYSTEM, 6000));
+    const out = parseJSON(await ai([{ role: 'user', content: `Answers to grade:\n${JSON.stringify(toGrade)}\n\nOther questions the student got wrong (already graded, use for advice):\n${JSON.stringify(mistakes)}` }], GRADE_SYSTEM, 14000));
     for (const g of out.grades || []) if (toGrade.some(t => t.id === g.id)) items[g.id] = { earned: Math.min(ex.qs[g.id].points, Math.max(0, +g.earned || 0)), feedback: g.feedback || '' };
     advice = out.advice || '';
   } catch (e) { advice = toGrade.length ? 'AI grading failed (' + e.message + '). Written answers were scored 0 — compare them to the model answers below.' : ''; }
@@ -789,8 +818,8 @@ function tutorTab(s, el) {
   const draw = () => {
     el.innerHTML = `<div class="card">
       <div class="chat" id="chat">
-        <div class="msg ai">Hi! I’m your tutor for <b>${esc(s.title)}</b>. Ask me to explain a concept, give an example, or quiz you. I’ll link 📍 to the exact spot in your material.</div>
-        ${s.chat.map(m => `<div class="msg ${m.role === 'user' ? 'user' : 'ai'}">${m.role === 'user' ? esc(m.content) : withCites(m.content, s.id)}</div>`).join('')}
+        <div class="msg ai">Hi! I’m your tutor for <b>${esc(s.title)}</b>. Ask me to explain a concept, give an example, or quiz you.</div>
+        ${s.chat.map(m => `<div class="msg ${m.role === 'user' ? 'user' : 'ai'}">${m.role === 'user' ? esc(m.content) : md(stripCites(m.content))}</div>`).join('')}
         ${tutorBusy.has(s.id) ? '<div class="msg ai"><span class="spin"></span></div>' : ''}
       </div>
       <div class="row" style="margin:10px 0 8px">${['Explain the hardest concept simply', 'Give me a real-world example', 'Quiz me with 3 open questions', 'What should I memorize?']
@@ -809,31 +838,12 @@ function tutorTab(s, el) {
     s.chat.push({ role: 'user', content: text }); tutorBusy.add(s.id); draw();
     try {
       const reply = await ai(s.chat.slice(-20), `You are a friendly, encouraging tutor helping a student learn the material below. Explain clearly, use examples, check understanding, and keep answers focused. Use markdown.
-When you state a fact that comes from the material, cite it right after the sentence as [cite: exact verbatim excerpt of 5-20 words]. The excerpt must be copied character-for-character from the material. Cite 1-4 times per answer. If something isn't in the material, you may answer from general knowledge but say so and don't cite it.\n\n<material>\n${s.source}\n</material>`, 2000);
+If something isn't in the material, you may answer from general knowledge but say so.\n\n<material>\n${s.source}\n</material>`, 2000);
       s.chat.push({ role: 'assistant', content: reply });
     } catch (e) { s.chat.pop(); alert(e.message); }
     tutorBusy.delete(s.id); saveSets(); if (view.name === 'set' && view.tab === 'tutor' && view.id === s.id) draw();
   };
   draw();
-}
-
-// ---------- source viewer with highlighted citation ----------
-function findQuote(src, q) {
-  const words = String(q).split(/\W+/).filter(Boolean);
-  const re = ws => new RegExp(ws.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\W+'), 'i');
-  for (const ws of [words, words.slice(0, 10), words.slice(-10), words.slice(0, 6), words.slice(-6)]) {
-    if (ws.length < 3) continue;
-    const m = re(ws).exec(src); if (m) return m;
-  }
-  return null;
-}
-function sourceTab(s, el) {
-  const m = view.quote ? findQuote(s.source, view.quote) : null;
-  const body = m ? esc(s.source.slice(0, m.index)) + '<mark id="hit">' + esc(m[0]) + '</mark>' + esc(s.source.slice(m.index + m[0].length)) : esc(s.source);
-  el.innerHTML = `${view.quote ? `<div class="card" style="margin-bottom:14px;background:var(--accent-2);border-color:transparent">
-      ${m ? '📍 Highlighted below: the passage in your material that supports this.' : `⚠ Couldn’t locate this exact passage in your material: “${esc(view.quote)}”`}</div>` : ''}
-    <div class="card source">${body}</div>`;
-  if (m) requestAnimationFrame(() => $('#hit').scrollIntoView({ block: 'center', behavior: 'smooth' }));
 }
 
 render();
